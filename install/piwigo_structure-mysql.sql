@@ -143,9 +143,10 @@ CREATE TABLE `piwigo_history` (
   `date` date NOT NULL default '1970-01-01',
   `time` time NOT NULL default '00:00:00',
   `user_id` mediumint(8) unsigned NOT NULL default '0',
-  `IP` varchar(15) NOT NULL default '',
+  `IP` char(39) NOT NULL default '',
   `section` enum('categories','tags','search','list','favorites','most_visited','best_rated','recent_pics','recent_cats') default NULL,
   `category_id` smallint(5) default NULL,
+  `search_id` int(10) unsigned default NULL,
   `tag_ids` varchar(50) default NULL,
   `image_id` mediumint(8) default NULL,
   `image_type` enum('picture','high','other') default NULL,
@@ -319,7 +320,10 @@ CREATE TABLE `piwigo_rate` (
 DROP TABLE IF EXISTS `piwigo_search`;
 CREATE TABLE `piwigo_search` (
   `id` int(10) unsigned NOT NULL auto_increment,
-  `last_seen` date default NULL,
+  `search_uuid` CHAR(23) DEFAULT NULL,
+  `created_on` DATETIME DEFAULT NULL,
+  `created_by` MEDIUMINT(8) UNSIGNED,
+  `forked_from` INT(10) UNSIGNED,
   `rules` text,
   PRIMARY KEY  (`id`)
 ) ENGINE=MyISAM;
@@ -330,7 +334,7 @@ CREATE TABLE `piwigo_search` (
 
 DROP TABLE IF EXISTS `piwigo_sessions`;
 CREATE TABLE `piwigo_sessions` (
-  `id` varchar(255) binary NOT NULL default '',
+  `id` varchar(50) binary NOT NULL default '',
   `data` mediumtext NOT NULL,
   `expiration` datetime NOT NULL default '1970-01-01 00:00:00',
   PRIMARY KEY  (`id`)

@@ -10,7 +10,9 @@ const str_mb_used = "{'%s MB used'|translate}";
 const str_gb = "{'%sGB'|translate}".replace(' ', '&nbsp;');
 const str_mb = "{'%sMB'|translate}".replace(' ', '&nbsp;');
 const storage_total = {$STORAGE_TOTAL};
-const storage_details = {$STORAGE_DETAILS};
+const storage_details = {$STORAGE_CHART_DATA|json_encode};
+const translate_files = "{'%d files'|translate|escape:javascript}";
+let translate_type = {};
 {literal}
 jQuery().ready(function(){
 	jQuery('.cluetip').cluetip({
@@ -58,43 +60,12 @@ jQuery().ready(function(){
   let size_nb = storage_total > 1000000 ? (storage_total / 1000000).toFixed(2) : (storage_total / 1000).toFixed(0);
   $(".chart-title-infos").html(size_info.replace("%s", size_nb));
 });
-
-//Tooltip for the storage chart
-$('.storage-chart span').each(function () {
-  let tooltip = $('.storage-tooltips #'+$(this).data('type'));
-  let left = $(this).position().left + $(this).width()/2 - tooltip.innerWidth()/2;
-  tooltip.css('left', left+"px")
-  $(this).hover(function() {
-    tooltip.toggle();
-  });
-});
-
-$(window).on('resize', function(){
-  $('.storage-chart span').each(function () {
-    let tooltip = $('.storage-tooltips #'+$(this).data('type'));
-    let left = $(this).position().left + $(this).width()/2 - tooltip.innerWidth()/2;
-    tooltip.css('left', left+"px")
-  });
-});
-let size = 0;
-let str_size_type = "MB";
-let size_nb = 0;
-let str_size = "";
 {/literal}
-{foreach from=$STORAGE_CHART_DATA key=type item=value}
-  size = {$value};
-  str_size_type_string = size > 1000000 ? str_gb : str_mb;
-  size_nb = size > 1000000 ? (size / 1000000).toFixed(2) : (size / 1000).toFixed(0);
-  str_size = " : " + str_size_type_string.replace("%s", size_nb);
-
-  if (typeof storage_details.{$type} !== 'undefined') {
-    // str_size += " (" + storage_details.{$type} + ")";
-  }
-
-  $("#storage-{$type}").html("<b></b>" + str_size);
-  $("#storage-{$type} b").html("{$type|translate}");
+{foreach from=$STORAGE_CHART_DATA key=type_to_translate item=details}
+translate_type['{$type_to_translate}'] = "{$type_to_translate|translate}";
 {/foreach}
 {/footer_script}
+{combine_script id='intro_tooltips' load='footer' path='admin/themes/default/js/intro_tooltips.js'}
 
 {html_style}
 .eiw .messages ul li {
@@ -189,13 +160,14 @@ let str_size = "";
     {foreach from=$ACTIVITY_CHART_DATA item=WEEK_ACTIVITY key=WEEK_NUMBER}
       <div id="week-{$WEEK_NUMBER}-legend" class="row-legend"><div>{'Week %d'|@translate:$ACTIVITY_WEEK_NUMBER[$WEEK_NUMBER]}</div></div>
       {foreach from=$WEEK_ACTIVITY item=SIZE key=DAY_NUMBER}
-        <span>
+        <span class="activity_tooltips">
           {if $SIZE != 0}
           {assign var='SIZE_IN_UNIT' value=$SIZE/$ACTIVITY_CHART_NUMBER_SIZES * 5 + 1}
           {assign var='OPACITY_IN_UNIT' value=$SIZE/$ACTIVITY_CHART_NUMBER_SIZES * 0.6 + 0.2}
           <div id="day{$WEEK_NUMBER}-{$DAY_NUMBER}" style="height:{$SIZE_IN_UNIT}vw;width:{$SIZE_IN_UNIT}vw;"></div>
           {if $ACTIVITY_LAST_WEEKS[$WEEK_NUMBER][$DAY_NUMBER]["number"] != 0}     
           <p class="tooltip" style="transform: translate(-50%,{$SIZE_IN_UNIT/2}vw);">
+            <span class="tooltip-arrow"></span>
             <span class="tooltip-header"> 
               <span class="tooltip-title">{if $ACTIVITY_LAST_WEEKS[$WEEK_NUMBER][$DAY_NUMBER]["number"] > 1}{'%d Activities'|translate:$ACTIVITY_LAST_WEEKS[$WEEK_NUMBER][$DAY_NUMBER]["number"]}{else}{'%d Activity'|translate:$ACTIVITY_LAST_WEEKS[$WEEK_NUMBER][$DAY_NUMBER]["number"]}{/if}</span>
               <span class="tooltip-date">{$ACTIVITY_LAST_WEEKS[$WEEK_NUMBER][$DAY_NUMBER]["date"]}</span>
@@ -234,19 +206,28 @@ let str_size = "";
     {/foreach}
   </div>
 
-  <div class="chart-title"> {'Storage'|translate} <span class="chart-title-infos"> {'%s MB used'|translate:(round($STORAGE_TOTAL/1000, 0))} </span></div>
+  <div id="chart-title-storage" class="chart-title"> {'Storage'|translate} <span class="chart-title-infos"> {'%s MB used'|translate:(round($STORAGE_TOTAL/1000, 0))} </span></div>
 
   <div class="storage-chart">
-    {foreach from=$STORAGE_CHART_DATA key=type item=value}
-      <span data-type="storage-{$type}" style="width:{$value/$STORAGE_TOTAL*100}%"> 
-        <p>{round($value/$STORAGE_TOTAL*100)}%</p>
+    {foreach from=$STORAGE_CHART_DATA key=type item=details}
+      <span data-type="storage-{$type}" style="width:{$details.total.filesize/$STORAGE_TOTAL*100}%"> 
+        <p>{round($details.total.filesize/$STORAGE_TOTAL*100)}%</p>
       </span>  
     {/foreach}
   </div>
 
   <div class="storage-tooltips">
     {foreach from=$STORAGE_CHART_DATA key=type item=value}
-      <p id="storage-{$type}" class="tooltip"><b>{$type|translate}</b></p>
+      <p id="storage-{$type}" class="tooltip">
+      <span class="tooltip-arrow"></span>
+        <span class="tooltip-header">
+          <span id="storage-title-{$type}" class="tooltip-title"></span>
+          <span id="storage-size-{$type}" class="tooltip-size"></span>
+          <span id="storage-files-{$type}" class="tooltip-files"></span>
+        </span>
+        <span class="separated"></span>
+        <span id="storage-detail-{$type}" class="tooltip-details"></span>
+      </p>
     {/foreach}
   </div>
 

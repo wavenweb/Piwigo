@@ -59,7 +59,7 @@ $nb_orphans = $page['nb_orphans']; // already calculated in admin.php
 
 if ($page['nb_photos_total'] >= 100000) // but has not been calculated on a big gallery, so force it now
 {
-  $nb_orphans = count(get_orphans());
+  $nb_orphans = count_orphans();
 }
 
 if ($nb_orphans > 0)
@@ -69,6 +69,24 @@ if ($nb_orphans > 0)
   $message = '<a href="'.$orphans_url.'"><i class="icon-heart-broken"></i>';
   $message.= l10n('Orphans').'</a>';
   $message.= '<span class="adminMenubarCounter">'.$nb_orphans.'</span>';
+
+  $page['warnings'][] = $message;
+}
+
+// locked album ?
+$query = '
+SELECT COUNT(*)
+  FROM '.CATEGORIES_TABLE.'
+  WHERE visible =\'false\'
+;';
+list($locked_album) = pwg_db_fetch_row(pwg_query($query));
+if ($locked_album > 0)
+{
+  $locked_album_url = PHPWG_ROOT_PATH.'admin.php?page=cat_options&section=visible';
+
+  $message = '<a href="'.$locked_album_url.'"><i class="icon-cone"></i>';
+  $message.= l10n('Locked album').'</a>';
+  $message.= '<span class="adminMenubarCounter">'.$locked_album.'</span>';
 
   $page['warnings'][] = $message;
 }
@@ -91,74 +109,10 @@ if ($conf['show_newsletter_subscription'] and userprefs_get_param('show_newslett
 }
 
 
-$query = '
-SELECT COUNT(*)
-  FROM '.IMAGES_TABLE.'
-;';
-list($nb_photos) = pwg_db_fetch_row(pwg_query($query));
-
-$query = '
-SELECT COUNT(*)
-  FROM '.CATEGORIES_TABLE.'
-;';
-list($nb_categories) = pwg_db_fetch_row(pwg_query($query));
-
-$query = '
-SELECT COUNT(*)
-  FROM '.TAGS_TABLE.'
-;';
-list($nb_tags) = pwg_db_fetch_row(pwg_query($query));
-
-$query = '
-SELECT COUNT(*)
-  FROM '.IMAGE_TAG_TABLE.'
-;';
-list($nb_image_tag) = pwg_db_fetch_row(pwg_query($query));
-
-$query = '
-SELECT COUNT(*)
-  FROM '.USERS_TABLE.'
-;';
-list($nb_users) = pwg_db_fetch_row(pwg_query($query));
-
-$query = '
-SELECT COUNT(*)
-  FROM `'.GROUPS_TABLE.'`
-;';
-list($nb_groups) = pwg_db_fetch_row(pwg_query($query));
-
-$query = '
-SELECT COUNT(*)
-  FROM '.RATE_TABLE.'
-;';
-list($nb_rates) = pwg_db_fetch_row(pwg_query($query));
-
-$query = '
-SELECT
-    SUM(nb_pages)
-  FROM '.HISTORY_SUMMARY_TABLE.'
-  WHERE month IS NULL
-;';
-list($nb_views) = pwg_db_fetch_row(pwg_query($query));
-
-$query = '
-SELECT
-    SUM(filesize)
-  FROM '.IMAGES_TABLE.'
-;';
-list($disk_usage) = pwg_db_fetch_row(pwg_query($query));
-
-$query = '
-SELECT
-    SUM(filesize)
-  FROM '.IMAGE_FORMAT_TABLE.'
-;';
-list($formats_disk_usage) = pwg_db_fetch_row(pwg_query($query));
-
-$disk_usage+= $formats_disk_usage;
+$stats = get_pwg_general_statitics();
 
 $du_decimals = 1;
-$du_gb = $disk_usage/(1024*1024);
+$du_gb = $stats['disk_usage']/(1024*1024);
 if ($du_gb > 100)
 {
   $du_decimals = 0;
@@ -166,14 +120,14 @@ if ($du_gb > 100)
 
 $template->assign(
   array(
-    'NB_PHOTOS' => $nb_photos,
-    'NB_ALBUMS' => $nb_categories,
-    'NB_TAGS' => $nb_tags,
-    'NB_IMAGE_TAG' => $nb_image_tag,
-    'NB_USERS' => $nb_users,
-    'NB_GROUPS' => $nb_groups,
-    'NB_RATES' => $nb_rates,
-    'NB_VIEWS' => number_format_human_readable($nb_views),
+    'NB_PHOTOS' => $stats['nb_photos'],
+    'NB_ALBUMS' => $stats['nb_categories'],
+    'NB_TAGS' => $stats['nb_tags'],
+    'NB_IMAGE_TAG' => $stats['nb_image_tag'],
+    'NB_USERS' => $stats['nb_users'],
+    'NB_GROUPS' => $stats['nb_groups'],
+    'NB_RATES' => $stats['nb_rates'],
+    'NB_VIEWS' => number_format_human_readable($stats['nb_views']),
     'NB_PLUGINS' => count($pwg_loaded_plugins),
     'STORAGE_USED' => str_replace(' ', '&nbsp;', l10n('%sGB', number_format($du_gb, $du_decimals))),
     'U_QUICK_SYNC' => PHPWG_ROOT_PATH.'admin.php?page=site_update&amp;site=1&amp;quick_sync=1&amp;pwg_token='.get_pwg_token(),
@@ -384,9 +338,8 @@ $template->assign('DAY_LABELS', $day_labels);
 // |                           get storage data                            |
 // +-----------------------------------------------------------------------+
 
-$video_format = array('webm','webmv','ogg','ogv','mp4','m4v');
+$video_format = array('webm','webmv','ogg','ogv','mp4','m4v', 'mov');
 $data_storage = array();
-$file_extensions_of = array();
 
 //Select files in Image_Table
 $query = '
@@ -416,34 +369,37 @@ foreach ($file_extensions as $ext => $ext_details)
     $type = 'Other';
   }
 
-  @$file_extensions_of[$type][strtoupper($ext)] = $ext_details['ext_counter'];
-  @$data_storage[$type] += $ext_details['filesize'];
-}
+  @$data_storage[$type]['total']['filesize'] += $ext_details['filesize'];
+  @$data_storage[$type]['total']['nb_files'] += $ext_details['ext_counter'];
 
-$data_storage_details = array();
-
-foreach ($file_extensions_of as $type => $extensions)
-{
-  $details = array();
-
-  foreach ($extensions as $ext => $counter)
-  {
-    $details[] = $counter.'x'.$ext;
-  }
-  $data_storage_details[$type] = implode(', ', $details);
+  @$data_storage[$type]['details'][strtoupper($ext)] = array(
+    'filesize' => $ext_details['filesize'],
+    'nb_files' => $ext_details['ext_counter'],
+  );
 }
 
 //Select files from format table
 $query = '
-SELECT SUM(filesize)
+SELECT
+    COUNT(*) AS ext_counter,
+    ext,
+    SUM(filesize) AS filesize
   FROM `'.IMAGE_FORMAT_TABLE.'`
+  GROUP BY ext
 ;';
 
-$result = query2array($query);
-
-if (isset($result[0]['SUM(filesize)']))
+$file_extensions = query2array($query, 'ext');
+foreach ($file_extensions as $ext => $ext_details)
 {
-  $data_storage['Formats'] = $result[0]['SUM(filesize)'];
+  $type = 'Formats';
+
+  @$data_storage[$type]['total']['filesize'] += $ext_details['filesize'];
+  @$data_storage[$type]['total']['nb_files'] += $ext_details['ext_counter'];
+
+  @$data_storage[$type]['details'][strtoupper($ext)] = array(
+    'filesize' => $ext_details['filesize'],
+    'nb_files' => $ext_details['ext_counter'],
+  );
 }
 
 // Add cache size if requested and known.
@@ -454,7 +410,7 @@ if ($conf['add_cache_to_storage_chart'] && isset($conf['cache_sizes']))
   {
     if (isset($cache_sizes[0]) && isset($cache_sizes[0]['value']))
     {
-      $data_storage['Cache'] = $cache_sizes[0]['value']/1024;
+      @$data_storage['Cache']['total']['filesize'] = $cache_sizes[0]['value']/1024;
     }
   }
 }
@@ -463,13 +419,13 @@ if ($conf['add_cache_to_storage_chart'] && isset($conf['cache_sizes']))
 $total_storage = 0;
 foreach ($data_storage as $value) 
 {
-  $total_storage += $value;
+  $total_storage += $value['total']['filesize'];
 }
 
 //Pass data to HTML
 $template->assign('STORAGE_TOTAL',$total_storage);
 $template->assign('STORAGE_CHART_DATA',$data_storage);
-$template->assign('STORAGE_DETAILS', json_encode($data_storage_details));
+
 // +-----------------------------------------------------------------------+
 // |                           sending html code                           |
 // +-----------------------------------------------------------------------+

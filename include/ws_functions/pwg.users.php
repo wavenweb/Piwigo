@@ -29,6 +29,20 @@ function ws_users_getList($params, &$service)
 {
   global $conf;
 
+  if (!preg_match(PATTERN_ORDER, $params['order']))
+  {
+    return new PwgError(WS_ERR_INVALID_PARAM, 'Invalid input parameter order');
+  }
+
+  // Insensitive case sort order
+  if (isset($params['order']))
+  {
+    if (strpos($params['order'], "username") !== false)
+    {
+      $params['order'] = str_ireplace("username", "LOWER(username)", $params['order']);
+    }
+  }
+
   $where_clauses = array('1=1');
 
   if (!empty($params['user_id']))
@@ -63,20 +77,32 @@ function ws_users_getList($params, &$service)
 
 
   if (!empty($params['min_register'])) {
-    list($min_register_month, $min_register_year) = explode(' ', $params["min_register"]);
-    if (strlen($min_register_month) == 1) {
-      $min_register_month = "0".$min_register_month;
+    if (!preg_match('/^\d\d\d\d(-\d{1,2}){0,2}$/', $params['min_register']))
+    {
+      return new PwgError(WS_ERR_INVALID_PARAM, 'Invalid input parameter min_register');
     }
-    $where_clauses[] = 'ui.registration_date >= \''.$min_register_year.'-'.$min_register_month.'-01 00:00:00\'';
+
+    $date_tokens = explode('-', $params['min_register']);
+    $min_register_year = $date_tokens[0];
+    $min_register_month = $date_tokens[1] ?? 1;
+    $min_register_day =  $date_tokens[2] ?? 1;
+    $min_date = sprintf('%u-%02u-%02u', $min_register_year, $min_register_month, $min_register_day);
+    $where_clauses[] = 'ui.registration_date >= \''.$min_date.' 00:00:00\'';
   }
 
 
   if (!empty($params['max_register'])) {
-    list($max_register_month, $max_register_year) = explode(' ', $params["max_register"]);
-    if (strlen($max_register_month) == 1) {
-      $max_register_month = "0".$max_register_month;
+    if (!preg_match('/^\d\d\d\d(-\d{1,2}){0,2}$/', $params['max_register']))
+    {
+      return new PwgError(WS_ERR_INVALID_PARAM, 'Invalid input parameter max_register');
     }
-    $where_clauses[] = 'ui.registration_date <= adddate(\''.$max_register_year.'-'.$max_register_month.'-01 00:00:00\', interval 1 month)';
+
+    $max_date_tokens = explode('-', $params['max_register']);
+    $max_register_year = $max_date_tokens[0];
+    $max_register_month = $max_date_tokens[1] ?? 12;
+    $max_register_day = $max_date_tokens[2] ?? date('t', strtotime($max_register_year.'-'.$max_register_month.'-1'));
+    $max_date = sprintf('%u-%02u-%02u', $max_register_year, $max_register_month, $max_register_day);
+    $where_clauses[] = 'ui.registration_date <= \''.$max_date.' 23:59:59\'';
   }
 
   if (!empty($params['status']))
@@ -222,11 +248,13 @@ SELECT DISTINCT ';
   }
   $users = array();
   $result = pwg_query($query);
+  $total_count = 0;
 
   /* GET THE RESULT OF SQL_CALC_FOUND_ROWS if display total_count is requested*/
   if (isset($params['display']['total_count'])) {
     $total_count_query_result = pwg_query('SELECT FOUND_ROWS();');
     list($total_count) = pwg_db_fetch_row($total_count_query_result);
+    $total_count = (int)$total_count;
   }
   while ($row = pwg_db_fetch_assoc($result))
   {
@@ -335,12 +363,14 @@ SELECT DISTINCT ';
         array(
           'page' => $params['page'],
           'per_page' => $params['per_page'],
-          'count' => count($users)
+          'count' => count($users),
+          'total_count' => $total_count,
           )
         ),
       'users' => new PwgNamedArray(array_values($users), 'user')
     );
   }
+  // deprecated: kept for retrocompatibility
   if (isset($params['display']['total_count'])) {
     $method_result['total_count'] = $total_count;
   }
@@ -376,13 +406,18 @@ function ws_users_add($params, &$service)
     }
   }
 
+  if ($params['auto_password'])
+  {
+    $params['password'] = generate_key(rand(15, 20));
+  }
+
   $user_id = register_user(
     $params['username'],
     $params['password'],
     $params['email'],
     false, // notify admin
     $errors,
-    $params['send_password_by_mail']
+    false // $params['send_password_by_mail']
     );
 
   if (!$user_id)
@@ -945,4 +980,121 @@ SELECT
    );
 }
 
+/**
+ * API method
+ * Returns the reset password link of the current user
+ * @since 15
+ * @param mixed[] $params
+ *    @option int user_id
+ *    @option string pwg_token
+ *    @option boolean send_by_mail
+ */
+function ws_users_generate_password_link($params, &$service)
+{
+  global $user, $conf;
+  include_once(PHPWG_ROOT_PATH.'admin/include/functions.php');
+  include_once(PHPWG_ROOT_PATH.'include/functions_mail.inc.php');
+
+  if (get_pwg_token() != $params['pwg_token'])
+  {
+    return new PwgError(403, 'Invalid security token');
+  }
+
+  // check if user exist
+  if (get_username($params['user_id']) === false)
+  {
+    return new PwgError(WS_ERR_INVALID_PARAM, 'This user does not exist.');
+  }
+
+  $user_lost = getuserdata($params['user_id']);
+
+  // Cannot perform this action for a guest or generic user
+  if (is_a_guest($user_lost['status']) or is_generic($user_lost['status']))
+  {
+    return new PwgError(403, 'Password reset is not allowed for this user');
+  }
+
+  // Only webmaster can perform this action for another webmaster  
+  if ('admin' === $user['status'] && 'webmaster' === $user_lost['status'])
+  {
+    return new PwgError(403, 'You cannot perform this action');
+  }
+
+  $first_login = has_already_logged_in($params['user_id']);
+  $send_by_mail_response = null;
+  $lang_to_use = $first_login ? get_default_language() : $user_lost['language'];
+
+  switch_lang_to($lang_to_use);
+  $generate_link = generate_password_link($params['user_id'], $first_login);
+
+  if ($params['send_by_mail'] and !empty($user_lost['email']))
+  {
+    if ($first_login)
+    {
+      $email_params = pwg_generate_set_password_mail($user_lost['username'], $generate_link['password_link'], $conf['gallery_title'], $generate_link['time_validation']);
+    }
+    else
+    {
+      $email_params = pwg_generate_reset_password_mail($user_lost['username'], $generate_link['password_link'], $conf['gallery_title'], $generate_link['time_validation']);
+    }
+    // Here we remove the display of errors because they prevent the response from being parsed
+    if (@pwg_mail($user_lost['email'], $email_params))
+    {
+      $send_by_mail_response = 'Mail sent at : ' . $user_lost['email'];
+    } 
+    else
+    {
+      $send_by_mail_response = false;
+    }
+  }
+  switch_lang_back();
+  
+  return array(
+    'generated_link' => $generate_link['password_link'],
+    'send_by_mail' => $send_by_mail_response,
+    'time_validation' => $generate_link['time_validation'],
+  );
+}
+
+/**
+ * API method
+ * Set a user as the main user
+ * @since 15
+ * @param mixed[] $params
+ *    @option int user_id
+ *    @option string pwg_token
+ */
+function ws_set_main_user($params, &$service)
+{
+  include_once(PHPWG_ROOT_PATH.'admin/include/functions.php');
+
+  // check if not webmaster
+  if (!is_webmaster())
+  {
+    return new PwgError(403, 'You cannot perform this action');
+  }
+
+  //check pwg_token
+  if (get_pwg_token() != $params['pwg_token'])
+  {
+    return new PwgError(403, 'Invalid security token');
+  }
+
+  // checl if user exist
+  if (get_username($params['user_id']) === false)
+  {
+    return new PwgError(WS_ERR_INVALID_PARAM, 'This user does not exist.');
+  }
+
+  $new_main_user = getuserdata($params['user_id']);
+
+  // check if the user to set as main user is not webmaster
+  if ('webmaster' !== $new_main_user['status'])
+  {
+    return new PwgError(403, 'This user cannot become a main user because he is not a webmaster.');
+  }
+
+  conf_update_param('webmaster_id', $params['user_id']);
+  return 'The main user has been changed.';
+}
 ?>
